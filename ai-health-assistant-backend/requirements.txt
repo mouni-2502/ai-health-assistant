@@ -1,0 +1,177 @@
+flask
+flask-cors
+transformers
+torch
+//////////////app.jsx/////////////
+import React, { useState } from 'react';
+import axios from 'axios';
+
+function App() {
+  const [location, setLocation] = useState('');
+  const [coords, setCoords] = useState('');
+  const [text, setText] = useState('');
+  const [file, setFile] = useState(null);
+  const [analysis, setAnalysis] = useState('');
+  const [diet, setDiet] = useState('');
+
+  const handleLocateMe = () => {
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(async (pos) => {
+        const lat = pos.coords.latitude;
+        const lng = pos.coords.longitude;
+        setCoords(`${lat}, ${lng}`);
+
+        try {
+          const res = await axios.post('http://localhost:5000/get-location', {
+            latitude: lat,
+            longitude: lng,
+          });
+
+          console.log('📍 Location response:', res.data); // Debug log
+          setLocation(res.data.locationName || 'Address not found');
+        } catch (err) {
+          console.error('Error fetching location:', err.message);
+          setLocation('Error retrieving location');
+        }
+      }, () => {
+        setLocation('Permission denied or unavailable');
+      });
+    } else {
+      setLocation('Geolocation not supported');
+    }
+  };
+
+  const handleAnalyze = async () => {
+    const formData = new FormData();
+    formData.append('text', text);
+    if (file) {
+      formData.append('pdfFile', file);
+    }
+
+    try {
+      const res = await axios.post('http://localhost:5000/analyze-symptoms', formData);
+      setAnalysis(res.data.analysis || 'No analysis returned');
+      setDiet(res.data.diet || 'No diet plan returned');
+    } catch (err) {
+      console.error('Error analyzing symptoms:', err.message);
+      setAnalysis('Error analyzing symptoms');
+      setDiet('');
+    }
+  };
+
+  return (
+    <div style={{ padding: '20px', fontFamily: 'Arial' }}>
+      <h2>🩺 AI Health Symptom Checker</h2>
+
+      <button onClick={handleLocateMe}>📍 Locate Me</button>
+      <p>📌 <strong>Location:</strong> {location}</p>
+      <p>📍 <strong>Coordinates:</strong> {coords}</p>
+
+      <input
+        type="file"
+        accept=".pdf"
+        onChange={(e) => setFile(e.target.files[0])}
+      />
+      <p>📄 <strong>Selected File:</strong> {file ? file.name : 'None'}</p>
+
+      <textarea
+        placeholder="Enter your symptoms..."
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        rows={4}
+        style={{ width: '100%', marginTop: '10px' }}
+      />
+
+      <br /><br />
+      <button onClick={handleAnalyze}>🔍 Check with AI</button>
+
+      <h3>📄 Analysis</h3>
+      <p>{analysis}</p>
+
+      <h3>🧃 Suggested Diet Plan</h3>
+      <p>{diet}</p>
+    </div>
+  );
+}
+
+export default App;
+//////////////////////////server.js///////////////////
+const express = require('express');
+const cors = require('cors');
+const axios = require('axios');
+const fileUpload = require('express-fileupload');
+const pdfParse = require('pdf-parse');
+
+const app = express();
+const PORT = process.env.PORT || 5000;
+
+// ✅ Replace this with your real Google Maps API Key
+const GOOGLE_API_KEY = 'AIzaSyBkHqR11h99b_P03DIED7fDXuC_bRGgBug';
+
+app.use(cors());
+app.use(express.json());
+app.use(fileUpload());
+
+// 📍 Get address from coordinates
+app.post('/get-location', async (req, res) => {
+  const { latitude, longitude } = req.body;
+
+  try {
+    const geoURL = `https://maps.googleapis.com/maps/api/geocode/json?latlng=${latitude},${longitude}&key=${GOOGLE_API_KEY}`;
+    const response = await axios.get(geoURL);
+
+    if (
+      response.data.status === 'OK' &&
+      response.data.results &&
+      response.data.results.length > 0
+    ) {
+      const locationName = response.data.results[0].formatted_address;
+      res.json({ locationName });
+    } else {
+      res.json({ locationName: 'Address not found' });
+    }
+  } catch (error) {
+    console.error('Geocoding error:', error.message);
+    res.status(500).json({ error: 'Failed to fetch location' });
+  }
+});
+
+// 📄 Analyze symptoms from text or PDF
+app.post('/analyze-symptoms', async (req, res) => {
+  try {
+    let symptomText = req.body.text || '';
+
+    if (req.files && req.files.pdfFile) {
+      const pdfBuffer = req.files.pdfFile.data;
+      const parsed = await pdfParse(pdfBuffer);
+      symptomText += ' ' + parsed.text;
+    }
+
+    const lowerText = symptomText.toLowerCase();
+    let responseText = '';
+    let dietPlan = '';
+
+    if (lowerText.includes('cold')) {
+      responseText = 'Common cold detected. Stay hydrated and rest.';
+      dietPlan = 'Ginger tea, warm soups, and vitamin C-rich foods.';
+    } else if (lowerText.includes('headache')) {
+      responseText = 'Possible headache. Reduce screen time and rest.';
+      dietPlan = 'Drink water, avoid caffeine, and try magnesium-rich foods.';
+    } else {
+      responseText = 'Symptoms not recognized clearly.';
+      dietPlan = 'Maintain a balanced diet and consult a doctor if unsure.';
+    }
+
+    res.json({
+      analysis: responseText,
+      diet: dietPlan,
+    });
+  } catch (err) {
+    console.error('Symptom analysis error:', err.message);
+    res.status(500).json({ error: 'Error analyzing symptoms' });
+  }
+});
+
+app.listen(PORT, () => {
+  console.log(`✅ Server running on port ${PORT}`);
+});

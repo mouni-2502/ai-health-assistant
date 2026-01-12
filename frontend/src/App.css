@@ -1,0 +1,82 @@
+body {
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  background: linear-gradient(to right, #eef2f3, #f9f9f9);
+  margin: 0;
+  padding: 1rem;
+  color: #333;
+}
+
+.container {
+  max-width: 500px;
+  margin: auto;
+  background: white;
+  padding: 1rem;
+  border-radius: 12px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+}
+
+h1 {
+  font-size: 1.6rem;
+  color: #222;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.section {
+  margin-top: 1rem;
+  padding: 0.75rem;
+  background: #f1f5f9;
+  border-left: 5px solid #6c63ff;
+  border-radius: 8px;
+}
+
+.section h2 {
+  font-size: 1.1rem;
+  margin-bottom: 0.5rem;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+textarea, input[type="file"] {
+  width: 100%;
+  margin-top: 0.5rem;
+}
+
+textarea {
+  padding: 0.5rem;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  resize: vertical;
+}
+
+button {
+  margin-top: 0.5rem;
+  background: #6c63ff;
+  color: white;
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #5548c8;
+}
+
+.hospital {
+  margin-top: 0.5rem;
+  padding: 0.5rem;
+  background: #e0f7fa;
+  border-radius: 6px;
+}
+
+.hospital p {
+  margin: 0.25rem 0;
+  font-size: 0.9rem;
+}
+
+.icon {
+  font-size: 1.2rem;
+}

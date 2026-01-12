@@ -1,0 +1,295 @@
+// server.js - Refactored main server file
+require("dotenv").config();
+const express = require("express");
+const cors = require("cors");
+const errorHandler = require("./middleware/errorHandler");
+const { generalLimiter, analysisLimiter, hospitalLimiter } = require("./middleware/rateLimiter");
+const analysisRoutes = require("./routes/analysisRoutes");
+const createLocationRoutes = require("./routes/locationRoutes");
+
+const app = express();
+const PORT = process.env.PORT || 5000;
+
+// Gemini API Key Manager
+class GeminiAPIManager {
+  constructor() {
+    this.apiKeys = [];
+    this.currentKeyIndex = 0;
+    this.keyUsageCount = {};
+    this.keyLastUsed = {};
+    this.maxRequestsPerMinute = 20; // Conservative limit to avoid 429 errors
+
+    // Load all Gemini API keys from environment
+    for (let i = 1; i <= 20; i++) {
+      const key = process.env[`gemini_API_KEY_${i}`];
+      if (key) {
+        this.apiKeys.push(key);
+        this.keyUsageCount[key] = 0;
+        this.keyLastUsed[key] = 0;
+      }
+    }
+
+    if (this.apiKeys.length === 0) {
+      console.error("No Gemini API keys found in environment variables");
+    } else {
+      console.log(`Loaded ${this.apiKeys.length} Gemini API keys`);
+    }
+  }
+
+  getNextAPIKey() {
+    if (this.apiKeys.length === 0) {
+      throw new Error("No Gemini API keys available");
+    }
+
+    const now = Date.now();
+
+    // Find a key that hasn't exceeded rate limits
+    for (let i = 0; i < this.apiKeys.length; i++) {
+      const keyIndex = (this.currentKeyIndex + i) % this.apiKeys.length;
+      const key = this.apiKeys[keyIndex];
+
+      // Reset usage count if more than a minute has passed
+      if (now - this.keyLastUsed[key] > 60000) {
+        this.keyUsageCount[key] = 0;
+      }
+
+      if (this.keyUsageCount[key] < this.maxRequestsPerMinute) {
+        this.currentKeyIndex = (keyIndex + 1) % this.apiKeys.length;
+        this.keyUsageCount[key]++;
+        this.keyLastUsed[key] = now;
+        return key;
+      }
+    }
+
+    // If all keys are rate limited, use the least recently used one
+    const leastRecentlyUsedKey = this.apiKeys.reduce((prev, curr) =>
+      this.keyLastUsed[curr] < this.keyLastUsed[prev] ? curr : prev
+    );
+
+    this.keyUsageCount[leastRecentlyUsedKey]++;
+    this.keyLastUsed[leastRecentlyUsedKey] = now;
+    return leastRecentlyUsedKey;
+  }
+}
+
+const geminiManager = new GeminiAPIManager();
+
+// AI-powered symptom analysis using Gemini
+async function analyzeSymptoms(symptomsText) {
+  try {
+    const apiKey = geminiManager.getNextAPIKey();
+    const genAI = new GoogleGenerativeAI(apiKey);
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+
+    const prompt = `
+    Analyze the following symptoms and provide a structured response in JSON format:
+
+    Symptoms: "${symptomsText}"
+
+    Please provide the analysis in the following JSON structure:
+    {
+      "detectedSymptoms": ["symptom1", "symptom2", ...],
+      "hospitalType": "type of hospital - for searching it in google maps (e.g. Hospitals(general), Eye hospital, ENT hospital, Skin clinic, Heart care, Orthopedic Hospitals etc.)",
+      "dietPlan": "Specific dietary recommendations based on the symptoms point-wise array ["first bullet point", "second bullet point", ...]",
+      "possible-reasons": "List of possible reasons for the symptoms",
+      "severity": "low|medium|high",
+      "urgency": "routine|urgent|emergency"
+    }
+
+    Focus on:
+    1. Identifying specific medical symptoms from the text
+    2. Recommending the most appropriate hospital department/type
+    3. Providing relevant dietary advice
+    4. Assessing severity and urgency level
+
+    Return only valid JSON, no additional text.
+    `;
+
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const text = response.text();
+
+    // Parse the JSON response
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      return JSON.parse(jsonMatch[0]);
+    } else {
+      throw new Error("Invalid JSON response from AI");
+    }
+  } catch (error) {
+    console.error("Gemini API Error:", error);
+
+    // Fallback to basic analysis if AI fails
+    return {
+      detectedSymptoms: getBasicSymptoms(symptomsText),
+      hospitalType: "General Medicine",
+      dietPlan: [
+        "Maintain a balanced diet and stay hydrated",
+        "Consult a healthcare professional for specific dietary advice",
+      ],
+      "possible-reasons":
+        "Unable to determine specific reasons. Please consult a healthcare professional for proper diagnosis.",
+      severity: "medium",
+      urgency: "routine",
+    };
+  }
+}
+
+// Fallback basic symptom detection
+function getBasicSymptoms(symptoms) {
+  const symptomText = symptoms.toLowerCase();
+  const detected = [];
+
+  if (symptomText.includes("fever")) detected.push("fever");
+  if (symptomText.includes("cold")) detected.push("cold");
+  if (symptomText.includes("cough")) detected.push("cough");
+  if (symptomText.includes("headache")) detected.push("headache");
+  if (symptomText.includes("chest pain")) detected.push("chest pain");
+  if (
+    symptomText.includes("stomach ache") ||
+    symptomText.includes("abdominal pain")
+  )
+    detected.push("abdominal pain");
+  if (symptomText.includes("nausea")) detected.push("nausea");
+  if (symptomText.includes("diarrhea")) detected.push("diarrhea");
+  if (symptomText.includes("fatigue") || symptomText.includes("tired"))
+    detected.push("fatigue");
+
+  return detected.length > 0 ? detected : ["general discomfort"];
+}
+
+// Analyze symptoms route
+app.post("/analyze", async (req, res) => {
+  try {
+    let symptoms = req.body.symptoms || "";
+
+    if (!symptoms.trim()) {
+      return res.status(400).json({ error: "No symptoms provided" });
+    }
+
+    console.log("Analyzing symptoms:", symptoms);
+    const analysisResult = await analyzeSymptoms(symptoms);
+
+    const response = {
+      symptoms: analysisResult.detectedSymptoms.join(", "),
+      hospitalType: analysisResult.hospitalType,
+      dietPlan: analysisResult.dietPlan,
+      severity: analysisResult.severity,
+      urgency: analysisResult.urgency,
+      originalText: symptoms,
+      timestamp: new Date().toISOString(),
+    };
+
+    res.json(response);
+  } catch (err) {
+    console.error("Analysis error:", err);
+    res.status(500).json({
+      error: "Error analyzing symptoms",
+      details: err.message,
+    });
+  }
+});
+
+// Analyze symptoms from file upload
+app.post("/analyze-file", upload.single("file"), async (req, res) => {
+  try {
+    let symptoms = req.body.symptoms || "";
+
+    // Handle file upload if present
+    if (req.file) {
+      const dataBuffer = fs.readFileSync(req.file.path);
+      const pdfData = await pdfParse(dataBuffer);
+      symptoms += " " + pdfData.text;
+      fs.unlinkSync(req.file.path); // Cleanup uploaded file
+    }
+
+    if (!symptoms.trim()) {
+      return res
+        .status(400)
+        .json({ error: "No symptoms provided in text or file" });
+    }
+
+    console.log(
+      "Analyzing symptoms from file:",
+      symptoms.substring(0, 200) + "..."
+    );
+    const analysisResult = await analyzeSymptoms(symptoms);
+
+    const response = {
+      symptoms: analysisResult.detectedSymptoms.join(", "),
+      hospitalType: analysisResult.hospitalType,
+      dietPlan: analysisResult.dietPlan,
+      "possible-reasons": analysisResult["possible-reasons"],
+      severity: analysisResult.severity,
+      urgency: analysisResult.urgency,
+      originalText: symptoms,
+      timestamp: new Date().toISOString(),
+    };
+
+    res.json(response);
+  } catch (err) {
+    console.error("File analysis error:", err);
+    res.status(500).json({
+      error: "Error analyzing symptoms from file",
+      details: err.message,
+    });
+  }
+});
+
+// Geocoding route
+app.post("/get-address", async (req, res) => {
+  const { lat, lng } = req.body;
+  try {
+    const response = await axios.get(
+      `https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lng}&key=${GOOGLE_MAPS_API_KEY}`
+    );
+    const address =
+      response.data.results[0]?.formatted_address || "Address not found";
+    res.json({ address });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ address: "Address not found" });
+  }
+});
+
+// Nearby hospitals route
+app.post("/nearby-hospitals", async (req, res) => {
+  const { lat, lng, hospitalType } = req.body;
+  try {
+    // Create search query based on hospital type
+    let searchQuery = "hospital";
+    if (hospitalType) {
+      // Clean and format the hospital type for search
+      const cleanType = hospitalType
+        .toLowerCase()
+        .replace(/hospitals?/gi, "")
+        .replace(/clinic/gi, "")
+        .replace(/care/gi, "")
+        .trim();
+
+      if (cleanType) {
+        searchQuery = `${cleanType} hospital`;
+      }
+    }
+
+    const response = await axios.get(
+      `https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=${lat},${lng}&radius=30000&keyword=${encodeURIComponent(
+        searchQuery
+      )}&type=hospital&key=${GOOGLE_MAPS_API_KEY}`
+    );
+    console.log(`Searching for: ${searchQuery}`, response.data);
+    const hospitals = response.data.results.slice(0, 5).map((place) => ({
+      name: place.name,
+      address: place.vicinity,
+      place_id: place.place_id,
+      rating: place.rating || "N/A",
+    }));
+    res.json({ hospitals });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ hospitals: [] });
+  }
+});
+
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
